@@ -1,0 +1,367 @@
+<html>
+<header>
+  <meta charset="UTF-8">
+  <title>Pong face</title>
+
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-core@2.6.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-converter@2.6.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow/tfjs-backend-webgl@2.6.0"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@tensorflow-models/facemesh"></script>
+
+  <script>
+    var video;
+    var model;
+
+    async function init() {
+      video = document.getElementById('video');
+      if (navigator.mediaDevices && navigator.mediaDevices.getUserMedia) {
+        navigator.mediaDevices.getUserMedia({ video: true }).then(function (stream) {
+          video.srcObject = stream;
+          video.play();
+        }).catch(function () {
+          document.getElementById('warning').innerHTML = "Please check your permissions: access to camera is needed to estimate head position for Pong."
+        });
+      }
+      model = await facemesh.load();
+    }
+
+    var predInterval;
+    var predictions = [];
+
+    async function waitForPredictions() {
+      const predictions = await model.estimateFaces(video);
+      return predictions;
+    }
+
+    function getPredictions() {
+      predictions = waitForPredictions();
+    }
+
+    function startPred() {
+      predInterval = window.setInterval(() => getPredictions(), 50)
+    }
+
+    function stop_pred() {
+      window.clearInterval(predInterval)
+    }
+
+
+  </script>
+  <script>
+
+    class Pong {
+      constructor(canvas) {
+        this.canvas = canvas;
+        this.width = 1280;
+        this.height = 960;
+        this.speed = 32;
+        this.initialBallPos = [640, 480];
+        this.ball = this.initialBallPos.slice();
+        this.ballVel = [(Math.random() < 0.5 ? -this.speed : this.speed), 0];
+        this.ballWidth = 32;
+        this.ballHeight = 32;
+
+        this.cooldown = 30;
+
+        this.letterboxHeight = 100;
+        this.boardY0 = this.letterboxHeight;
+        this.boardY1 = this.height - this.letterboxHeight;
+
+        this.scoreLeft = 0;
+        this.scoreRight = 0;
+        // Reset the score element, since they can hit reset
+        document.getElementById('score').innerHTML = "0 - 0";
+        document.getElementById('countdown').innerHTML = "3!";
+
+        this.context = this.canvas.getContext("2d");
+      }
+
+      /**
+       * Draw the ball, found faces, and net.
+       * @param obj Pong object to work off of (used to ensure we aren't mixing stuff up between updates)
+       * @param vals Face predictions from Tensorflow
+       */
+      draw(obj, vals) {
+        // Ensure that we can draw right now
+        requestAnimationFrame(function () {
+          obj.context.clearRect(0, 0, obj.width, obj.height);
+
+          // Draw the line across the middle
+          obj.context.fillStyle = "#000000";
+          obj.context.fillRect(obj.width/2-2, 0, 4, obj.height);
+
+          // Draw the bounding box around each face
+          obj.context.fillStyle = "#000000";
+          vals && vals.forEach(function (preds) {
+            let x0 = preds["boundingBox"]["topLeft"][0];
+            let x1 = preds["boundingBox"]["bottomRight"][0];
+            let y0 = preds["boundingBox"]["topLeft"][1];
+            let y1 = preds["boundingBox"]["bottomRight"][1];
+            obj.context.beginPath();
+            obj.context.rect(
+              obj.width-x1, y0,
+              x1-x0, y1-y0
+            );
+            obj.context.stroke();
+          });
+
+          // Draw the ball
+          obj.context.fillStyle = "#FF0000";
+          obj.context.fillRect(obj.width-obj.ball[0]-obj.ballWidth/2, obj.ball[1]-obj.ballHeight/2, obj.ballWidth, obj.ballHeight);
+
+          // Fill in the board that can't be seen
+          obj.context.fillStyle = "#000000";
+          obj.context.fillRect(0, 0, obj.width, obj.letterboxHeight);
+          obj.context.fillRect(0, obj.boardY1, obj.width, obj.letterboxHeight);
+        });
+      }
+
+      /**
+       * Check for collisions between the ball and a face, moving the ball away from the face.
+       * @param obj Pong object to work off of (used to ensure we aren't mixing stuff up between updates)
+       * @param vals Face predictions from Tensorflow
+       */
+      checkFaceCollisions(obj, vals) {
+        // Determine if the ball intersects with a face using AABB
+        vals.forEach(function (preds) {
+          let x0 = preds["boundingBox"]["topLeft"][0];
+          let x1 = preds["boundingBox"]["bottomRight"][0];
+          let y0 = preds["boundingBox"]["topLeft"][1];
+          let y1 = preds["boundingBox"]["bottomRight"][1];
+          if (obj.ball[0] < x1 && obj.ball[0] + obj.ballWidth > x0
+            && obj.ball[1] < y1 && obj.ball[1] + obj.ballHeight > y0) {
+            // Determine the angle to rebound at (always away from the center of the face)
+            let center_x = ((x1-x0)/2)+x0;
+            let center_y = ((y1-y0)/2)+y0;
+            let ball_x = (obj.ball[0]+obj.ballWidth/2);
+            let ball_y = (obj.ball[1]+obj.ballHeight/2);
+            let dx = center_x - ball_x;
+            let dy = center_y - ball_y;
+            let norm = Math.sqrt(dx*dx+dy*dy);
+            obj.ballVel[0] = -dx/norm*obj.speed;
+            obj.ballVel[1] = -dy/norm*obj.speed;
+            obj.speed += 5;
+          }
+        });
+      }
+
+      /**
+       * Update the ball position with its known velocity.
+       * @param obj Pong object to work off of (used to ensure we aren't mixing stuff up between updates)
+       */
+      updateBall(obj) {
+        // Move the ball according to its velocity
+        obj.ball[0] += obj.ballVel[0];
+        obj.ball[1] += obj.ballVel[1];
+      }
+
+      /**
+       * Check for collisions between the ball and the ceiling/floor of the video, rebounding the position.
+       * @param obj Pong object to work off of (used to ensure we aren't mixing stuff up between updates)
+       */
+      checkWallCollisions(obj) {
+        if (obj.ball[1] < obj.boardY0) {
+          obj.ballVel[1] = Math.abs(obj.ballVel[1]);
+          obj.ball[1] = obj.boardY0;
+        } else if (obj.ball[1] > obj.boardY1) {
+          obj.ballVel[1] = -Math.abs(obj.ballVel[1]);
+          obj.ball[1] = obj.boardY1;
+        }
+      }
+
+      /**
+       * Check for a goal on either side.
+       * @param obj Pong object to work off of (used to ensure we aren't mixing stuff up between updates)
+       */
+      checkGoal(obj) {
+        if (obj.ball[0] < 0) {
+          obj.scoreLeft += 1;
+          obj.ball = obj.initialBallPos.slice();
+          obj.ballVel = [this.speed, 0];
+          obj.cooldown = 30;
+          obj.speed = 32;
+          document.getElementById('countdown').innerHTML = "3!";
+        } else if (obj.ball[0] > obj.width) {
+          obj.scoreRight += 1;
+          obj.ball = obj.initialBallPos.slice();
+          obj.ballVel = [-this.speed, 0];
+          obj.cooldown = 30;
+          obj.speed = 32;
+          document.getElementById('countdown').innerHTML = "3!";
+        }
+
+        // If there was a goal, score one for the appropriate team
+        document.getElementById('score').innerHTML = obj.scoreLeft + " - " + obj.scoreRight;
+      }
+
+      /**
+       * Tensorflow assumed the video is 640x480, so we re-adjust the parameters we care about to be 1280x960.
+       * @param vals Face predictions from Tensorflow
+       */
+      normalizeFacePositions(vals) {
+        vals.forEach(function (preds) {
+		  
+          preds["boundingBox"]["topLeft"][0] = preds["boundingBox"]["topLeft"][0] * 2;
+          preds["boundingBox"]["bottomRight"][0] = preds["boundingBox"]["bottomRight"][0] * 2;
+          preds["boundingBox"]["topLeft"][1] = preds["boundingBox"]["topLeft"][1] * 2;
+          preds["boundingBox"]["bottomRight"][1] = preds["boundingBox"]["bottomRight"][1] * 2;
+        });
+      }
+
+      updateCooldown(obj) {
+        obj.cooldown -= 1;
+        if (obj.cooldown <= 0) {
+          document.getElementById('countdown').innerHTML = "";
+        } else if (obj.cooldown % 10 == 1) {
+          document.getElementById('countdown').innerHTML = Math.floor(obj.cooldown/10) + "!";
+        }
+      }
+
+      /**
+       * Handle one frame of update.
+       * @param obj Pong object to work off of (used to ensure we aren't mixing stuff up between updates)
+       */
+      updateStep(obj) {
+        // Do we have any new face predictions?
+        if (predictions.then) {
+          // Ensure we our predictions are ready before doing anything
+          predictions.then(function (vals) {
+            obj.normalizeFacePositions(vals);
+            if (obj.cooldown <= 0) {
+              obj.checkFaceCollisions(obj, vals);
+              obj.checkWallCollisions(obj);
+              obj.updateBall(obj);
+              obj.checkGoal(obj);
+            } else {
+              obj.updateCooldown(obj);
+            }
+            obj.draw(obj, vals);
+          });
+        } else {
+          // No new face predicitons -- continue with last known values
+          if (obj.cooldown > 0) {
+            obj.checkWallCollisions(obj);
+            obj.updateBall(obj);
+            obj.checkGoal(obj);
+          } else {
+            obj.updateCooldown(obj);
+          }
+          obj.draw(obj, null);
+        }
+        return;
+      }
+    }
+
+    var interval;
+
+
+    /**
+      * Begin the game.
+      */
+    function beginGame() {
+      document.getElementById('countdown').innerHTML = "Setting up...";
+      if (predInterval === undefined) {
+        startPred()
+      }
+      var c = document.getElementById("pong_board");
+      pongGame = new Pong(c);
+      document.getElementById('button').innerHTML = "Restart game";
+      var speed = 50;
+      if (interval) {
+        window.clearInterval(interval);
+      }
+      interval = window.setInterval(
+        () => pongGame.updateStep(pongGame), speed);
+    }
+
+
+
+  </script>
+
+  <style>
+    video {
+      transform: rotateY(180deg);
+      /* Safari and Chrome */
+      -webkit-transform: rotateY(180deg);
+      /* Firefox */
+      -moz-transform: rotateY(180deg);
+      position: absolute;
+      top: 250px;
+      left: 50%;
+      margin-left: -640px;
+      z-index: 1;
+    }
+
+    canvas {
+      position: absolute;
+      top: 250px;
+      left: 50%;
+      margin-left: -640px;
+      z-index: 2;
+    }
+
+    .content {
+      margin: auto;
+      text-align: center;
+    }
+
+    button {
+      background-color: #555555;
+      border: none;
+      color: white;
+      padding: 10px 17px;
+      text-align: center;
+      text-decoration: none;
+      display: inline-block;
+      font-size: 16px;
+    }
+
+    .score {
+      font-size: 24px;
+      position: absolute;
+      z-index: 3;
+      left:50%;
+      color: white;
+    }
+
+    .prefix {
+      margin-left: -50px;
+      top: 260px;
+    }
+
+    .suffix {
+      margin-left: -40px;
+      top: 290px;
+    }
+
+    .countdown {
+      margin-left: -40px;
+      top: 320px;
+    }
+  </style>
+
+</header>
+<div class="content">
+
+  <body onload="init()">
+    <h2> Play pong with your faces! </h2>
+    <p> Stand a few meters back, look straight ahead, press "Begin game", and have a moment of patience before the game begins.
+      <br>Best performance on desktop.</p>
+    <br>
+    <div id='warning'></div>
+
+    <a href="https://github.com/ordineu/pongface">Pong Face on GitHub</a> <br />
+    <a href="https://github.com/paruby/snake-face">Based on Snake-Face by paruby</a>
+    <br />
+    <div class="score prefix" id="status">Score: </div>
+    <div class="score suffix" id="score">0 - 0</div>
+    <div class="score countdown" id="countdown"></div>
+
+    <button id="button" onclick=beginGame()>Begin game</button>
+
+    <canvas id="pong_board" width="1280" height="960"></canvas>
+    <video id="video" width="1280" height="960" autoplay playsinline></video>
+  </body>
+</div>
+
+</html>
