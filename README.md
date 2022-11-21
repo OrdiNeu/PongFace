@@ -3,6 +3,8 @@ Play pong with your face! Watch my two roommates play a few rounds below:
 
 <img src="2020-04-29_PongWithFaces.gif" alt="demo" style="width: 640px;" />
 
+[Video if the above takes too long to load](https://imgur.com/a/1ISqY6A)
+
 **[Play here](https://ordineu.github.io/PongFace/index.html)**
 
 ## What is this?
